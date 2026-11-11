@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import time
 import json
 import requests
 from datetime import datetime
+from urllib.parse import urlparse
 
 # -----------------------------
 # RUTAS
 # -----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NOTB_DIR = os.path.join(BASE_DIR, "NOTB")
-CFG_FILE = os.path.join(BASE_DIR, "tb_config.json")
+CFG_FILE = os.path.join(BASE_DIR, "config_tb.json")
+LEGACY_CFG_FILE = os.path.join(BASE_DIR, "tb_config.json")
 
 # -----------------------------
 # CONFIG POR DEFECTO
@@ -25,19 +28,33 @@ DEFAULT_CFG = {
 # -----------------------------
 # CONFIG
 # -----------------------------
+def migrate_legacy_config():
+    """Migra tb_config.json (nombre antiguo) a config_tb.json."""
+    if os.path.exists(CFG_FILE) or not os.path.exists(LEGACY_CFG_FILE):
+        return
+
+    try:
+        os.replace(LEGACY_CFG_FILE, CFG_FILE)
+        print("?? tb_config.json migrado a config_tb.json")
+    except OSError as e:
+        print(f"?? No se pudo migrar tb_config.json: {e}")
+
+
 def load_or_create_config():
     cfg_changed = False
+
+    migrate_legacy_config()
 
     if not os.path.exists(CFG_FILE):
         cfg = DEFAULT_CFG.copy()
         cfg_changed = True
-        print("?? tb_config.json creado con valores por defecto")
+        print("?? config_tb.json creado con valores por defecto")
     else:
         try:
             with open(CFG_FILE, "r") as f:
                 cfg = json.load(f)
         except Exception as e:
-            print(f"?? Error leyendo tb_config.json: {e}")
+            print(f"?? Error leyendo config_tb.json: {e}")
             cfg = DEFAULT_CFG.copy()
             cfg_changed = True
 
@@ -55,7 +72,25 @@ def load_or_create_config():
 
 
 def config_is_valid(cfg):
-    return cfg["token"] != DEFAULT_CFG["token"]
+    url = str(cfg.get("url", "")).strip()
+    token = str(cfg.get("token", "")).strip()
+
+    parsed_url = urlparse(url)
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+        return False
+
+    if not token or token == DEFAULT_CFG["token"]:
+        return False
+
+    try:
+        if int(cfg.get("scan_interval_sec", 0)) <= 0:
+            return False
+        if int(cfg.get("cfg_retry_sec", 0)) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    return True
 
 # -----------------------------
 # PARSEO Y ENVIO
@@ -104,6 +139,21 @@ def send_to_tb(tb_url, token, ts, data):
     return r.status_code == 200
 
 # -----------------------------
+# MODO DE VALIDACIÓN (systemd ExecCondition)
+# -----------------------------
+if "--check-config" in sys.argv[1:]:
+    cfg = load_or_create_config()
+    if config_is_valid(cfg):
+        print("Configuración válida")
+        sys.exit(0)
+
+    print(
+        "Configuración no válida: define una URL http(s) y un token real "
+        f"en {CFG_FILE}"
+    )
+    sys.exit(1)
+
+# -----------------------------
 # LOOP PRINCIPAL
 # -----------------------------
 print("?? Enviador NOTB ? ThingsBoard iniciado")
@@ -115,7 +165,7 @@ while True:
     CFG_RETRY_SEC = int(cfg["cfg_retry_sec"])
 
     if not config_is_valid(cfg):
-        print("Esperando token valido en tb_config.json...")
+        print("Esperando token valido en config_tb.json...")
         time.sleep(CFG_RETRY_SEC)
         continue
 

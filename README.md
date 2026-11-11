@@ -44,11 +44,12 @@ Controlador Solar EPEVER (Modbus RS485)
 
 ## 📁 Estructura de Directorios
 
-El sistema debe instalarse en:
+El instalador usa la ruta real del proyecto. La estructura típica es:
 ```text
 
 /home/pi/epever/
 │
+├── install.sh
 ├── epevercsv_qod.py
 ├── notb_to_tb.py
 ├── config_tb.json
@@ -59,35 +60,173 @@ El sistema debe instalarse en:
 ## ⚙️ Requisitos del Sistema
 
 - Raspberry Pi (recomendado RPi 3B+ o superior)
-- Raspberry Pi OS
-- Python 3.9+
+- Raspberry Pi OS con acceso a Internet
+- Python 3.9–3.11 (recomendado; `pymodbus==2.5.3` no está probado en 3.12+)
+- `git` instalado
 - Puerto UART interno habilitado
 - Controlador Epever compatible con Modbus RTU
 
 ---
 
-## 🔧 Instalación Paso a Paso
+## 🚀 Instalación desde GitHub en Raspberry Pi (recomendada)
+
+Estos pasos se ejecutan directamente en el Raspberry Pi, con el controlador
+Epever conectado por RS485 al UART.
+
+### 1️⃣ Instalar Git
+
+```bash
+sudo apt update
+sudo apt install -y git
+```
+
+### 2️⃣ Clonar el repositorio
+
+```bash
+cd ~
+git clone https://github.com/Ferivas/epever.git
+cd epever
+```
+
+La instalación se hará en la ruta donde se clone el repositorio. En este
+ejemplo será `/home/pi/epever`.
+
+### 3️⃣ Ejecutar el instalador
+
+```bash
+chmod +x install.sh
+sudo ./install.sh
+```
+
+El instalador se encarga de:
+
+- Instalar `python3-venv`, `pyserial`, `requests` y `pymodbus==2.5.3`.
+- Crear el entorno virtual `venv/`.
+- Habilitar el UART nativo y deshabilitar la consola serial.
+- Añadir el usuario al grupo `dialout`.
+- Crear `DATOS/`, `NOTB/` y `config_tb.json` si no existen.
+- Crear, habilitar e iniciar los servicios systemd.
+- Configurar los servicios con la ruta real del proyecto y el usuario que
+  invocó `sudo`.
+
+### 4️⃣ Configurar el token de ThingsBoard
+
+Se puede pasar durante la instalación:
+
+```bash
+TB_URL=https://thingsboard.cloud TB_TOKEN=tu_token_real sudo -E ./install.sh
+```
+
+O editar el archivo después de instalar:
+
+```bash
+nano ~/epever/config_tb.json
+```
+
+```json
+{
+  "url": "https://thingsboard.cloud",
+  "token": "tu_token_real",
+  "scan_interval_sec": 30,
+  "cfg_retry_sec": 10
+}
+```
+
+Sin un token real, `notb_to_tb.service` queda instalado y habilitado, pero no
+arranca hasta que se configure. El instalador valida la configuración con:
+
+```bash
+~/epever/venv/bin/python ~/epever/notb_to_tb.py --check-config
+```
+
+Si devuelve error, corrige `config_tb.json` y arranca el servicio:
+
+```bash
+sudo systemctl start notb_to_tb.service
+```
+
+### 5️⃣ Reiniciar si el instalador modificó el UART
+
+Si el instalador añadió `enable_uart=1`, eliminó la consola serial o añadió el
+usuario a `dialout`, hay que reiniciar:
+
+```bash
+sudo reboot
+```
+
+### 6️⃣ Verificar la instalación
+
+```bash
+systemctl status epever-modbus.service
+systemctl status notb_to_tb.service
+```
+
+Logs en tiempo real:
+
+```bash
+journalctl -u epever-modbus.service -f
+journalctl -u notb_to_tb.service -f
+```
+
+### Actualizar una instalación existente
+
+```bash
+cd ~/epever
+git pull
+sudo ./install.sh
+```
+
+`install.sh` es idempotente y conserva `config_tb.json`, `DATOS/` y `NOTB/`.
+Volverá a generar las unidades systemd y actualizará las dependencias del
+entorno virtual.
+
+### Solución de problemas rápida
+
+- `/dev/serial0` no existe: revisar `enable_uart=1`, la consola serial y
+  reiniciar el Raspberry Pi.
+- Error de permisos en el puerto serial: confirmar que el usuario está en el
+  grupo `dialout` y reiniciar o cerrar sesión.
+- `notb_to_tb.service` inactivo: ejecutar `--check-config` y revisar
+  `config_tb.json`.
+- Ver los últimos errores de un servicio:
+
+```bash
+journalctl -u epever-modbus.service -n 50 --no-pager
+journalctl -u notb_to_tb.service -n 50 --no-pager
+```
+
+---
+
+## 🔧 Instalación Manual Paso a Paso (alternativa)
+
+Usar esta sección solo si no se quiere ejecutar `install.sh`. El instalador
+automático ya realiza todos estos pasos.
 
 ### 1️⃣ Crear carpeta del proyecto
 
+```bash
 mkdir -p /home/pi/epever
 cd /home/pi/epever
 mkdir DATOS NOTB
+```
 
 Copiar dentro:
-- epevercsv_qod.py
-- notb_to_tb.py
+- `install.sh`
+- `epevercsv_qod.py`
+- `notb_to_tb.py`
 
 ---
 
 ### 2️⃣ Crear entorno virtual (virtualenv)
 
+```bash
 sudo apt update
 sudo apt install python3-venv -y
 
 cd /home/pi/epever
 python3 -m venv venv
 source venv/bin/activate
+```
 
 ---
 
@@ -95,32 +234,51 @@ source venv/bin/activate
 
 Se usa una versión fija de pymodbus para estabilidad.
 
+```bash
 pip install pymodbus==2.5.3 pyserial requests
+```
 
 Verificar:
+
+```bash
 python -c "import pymodbus; print(pymodbus.__version__)"
+```
 
 Debe mostrar:
+
+```text
 2.5.3
+```
 
 ---
 
 ### 4️⃣ Configuración del UART del Raspberry
 
-Editar:
-/boot/config.txt
+Editar `/boot/firmware/config.txt` (Raspberry Pi OS Bookworm) o
+`/boot/config.txt` (versiones anteriores).
 
 Añadir:
+
+```text
 enable_uart=1
+```
 
 Deshabilitar consola serial:
+
+```bash
 sudo raspi-config
-Interface Options → Serial Port
-Login shell: NO
-Serial port hardware: YES
+```
+
+Seleccionar `Interface Options → Serial Port` y responder:
+
+- Login shell: `NO`
+- Serial port hardware: `YES`
 
 Reiniciar:
+
+```bash
 sudo reboot
+```
 
 ---
 
@@ -135,7 +293,7 @@ epevercsv_qod.py realiza:
 - Genera archivo espejo en NOTB
 
 Formato CSV:
-IDtrama,Fecha,Hora,IDMAC,pv_v,pv_i,pv_per,bat_v,bat_i,bat_pwr,load_v,load_i,load_pwr
+IDtrama,Fecha,Hora,IDMAC,pv_v,pv_i,pv_pwr,bat_v,bat_i,bat_pwr,load_v,load_i,load_pwr,qod
 
 ---
 
@@ -152,21 +310,49 @@ notb_to_tb.py:
 ## 🔐 Archivo de Configuración JSON
 
 Ubicación:
+```text
+<ruta-del-proyecto>/config_tb.json
+```
+
+Por ejemplo, si se clonó en `/home/pi/epever`:
+
+```text
 /home/pi/epever/config_tb.json
+```
 
 Contenido inicial:
+
+```json
 {
   "url": "https://thingsboard.cloud",
   "token": "ACCESS_TOKEN_DEL_DISPOSITIVO",
-  "SCAN_INTERVAL_SEC": 30,
-  "CFG_RETRY_SEC": 10
+  "scan_interval_sec": 30,
+  "cfg_retry_sec": 10
 }
+```
 
-El script espera hasta que el token sea válido antes de enviar datos.
+El archivo se crea automáticamente si no existe y tiene permisos `600`. Las
+claves deben estar en minúscula. El script espera hasta que el token sea válido
+antes de enviar datos.
+
+Si existe el nombre antiguo `tb_config.json`, se migra automáticamente a
+`config_tb.json` al arrancar.
+
+El servicio systemd valida la configuración antes de arrancar mediante:
+
+```bash
+venv/bin/python notb_to_tb.py --check-config
+```
+
+Si el token sigue siendo el placeholder o la URL no es válida, el comando
+devuelve error y systemd omite el arranque de `notb_to_tb.service`.
 
 ---
 
 ## 🧰 Servicios systemd
+
+`install.sh` genera estas unidades usando la ruta real del proyecto y el
+usuario que invocó `sudo`. Los ejemplos siguientes usan `/home/pi/epever`.
 
 ### Servicio 1: Lectura Modbus
 
@@ -181,8 +367,10 @@ After=network.target
 
 [Service]
 User=pi
+Group=pi
 WorkingDirectory=/home/pi/epever
 ExecStart=/home/pi/epever/venv/bin/python /home/pi/epever/epevercsv_qod.py
+Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=5
 Nice=10
@@ -201,12 +389,16 @@ Contenido:
 ```text
 [Unit]
 Description=Send NOTB data to ThingsBoard
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 User=pi
+Group=pi
 WorkingDirectory=/home/pi/epever
+ExecCondition=/home/pi/epever/venv/bin/python /home/pi/epever/notb_to_tb.py --check-config
 ExecStart=/home/pi/epever/venv/bin/python /home/pi/epever/notb_to_tb.py
+Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=10
 Nice=10
@@ -218,19 +410,35 @@ WantedBy=multi-user.target
 
 ### Activar servicios
 
+`install.sh` ya ejecuta estos comandos. Para hacerlo manualmente:
+
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable epever-modbus.service
 sudo systemctl enable notb_to_tb.service
 sudo systemctl start epever-modbus.service
 sudo systemctl start notb_to_tb.service
+```
 
 Ver estado:
+
+```bash
 systemctl status epever-modbus.service
 systemctl status notb_to_tb.service
+```
+
+Si `notb_to_tb.service` está inactivo, revisar la configuración:
+
+```bash
+~/epever/venv/bin/python ~/epever/notb_to_tb.py --check-config
+```
 
 Logs en tiempo real:
+
+```bash
 journalctl -u epever-modbus.service -f
 journalctl -u notb_to_tb.service -f
+```
 
 ---
 
@@ -274,6 +482,7 @@ NOTB/
 
 ### Configuración sensible
 config_tb.json
+tb_config.json
 
 ---
 
